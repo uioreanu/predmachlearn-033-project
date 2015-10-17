@@ -1,0 +1,258 @@
+---
+title: "Human Activity Recognition - Practical Machine Learning Course Project"
+author: "Calin Uioreanu"
+date: "October 16, 2015"
+output: html_document
+---
+
+Human Activity Recognition - HAR - has emerged as a key research area in the last years and is gaining increasing attention for applications of machine learning, supervised and unsupervised. For more informations, please visit: <http://groupware.les.inf.puc-rio.br/har>
+
+We will use the [caret R Package](http://topepo.github.io/caret/index.html) for its ease of use and the unified interface to a large number of modeling and prediction models. To estimate model performance we will use the accuracy, in case of multiclassifications problem the most significant outcome. Similar model performance indicators are AUC, the area under the Receiver Operating Characteristic (ROC) curve, used to estimate performance using a combination of sensitivity and specificity.
+
+
+# Libs & Preps
+```{r preps}
+#rm(list=ls()); gc()
+suppressWarnings(suppressMessages(library(caret)))
+# some other libraries are required as well: gbm, plot3D, randomForest, lattice and several subdependecies
+```
+
+
+# Retrieving data from HAR
+```{r getData}
+dataUrl = 'https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv';
+testUrl = 'https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv';
+dataSet = read.csv(dataUrl, na.strings=c("NA",""))
+testSet = read.csv(testUrl,na.strings=c("NA",""))
+
+# a large object, candidate for data.table?
+print(object.size(dataSet), units="Mb")
+```
+
+
+# Basic exploration procedures
+```{r exploration}
+# 19622 rows x 160 predictors data.frame; 20 rows x 160 final testing set
+dim(dataSet); dim(testSet)
+
+# which variable is in the Training Set and not in the Testing Set, respective the reverse (in the Testing Set, not in the Training Set)
+setdiff(names(dataSet), names(testSet)); setdiff(names(testSet), names(dataSet))
+
+# 20 - very few test-cases.
+nrow(testSet)/nrow(dataSet)
+
+# outcome variable spread
+table(dataSet$classe)
+
+# Now some charts to get an idea of the data complexity
+
+# plot cross-combinations of magnet_arm values by activity
+plot(dataSet[,grep("^magnet_arm", names(dataSet))], 
+     pch=20, 
+     cex=0.8, 
+     col=dataSet$classe, 
+     main="Magnet Arm coloured by Activity")
+
+# in 3D, some beautiful patterns emerge
+suppressWarnings(
+plot3D::points3D(
+  dataSet$magnet_arm_x, 
+  dataSet$magnet_arm_y, 
+  dataSet$magnet_arm_z, 
+  col=dataSet$classe,
+  main="3D Magnet Arm by Activity",
+  pch=20, cex=0.8
+))
+
+# 3D Magnet dumbbell
+suppressWarnings(
+plot3D::points3D(
+  dataSet$magnet_dumbbell_x, 
+  dataSet$magnet_dumbbell_y, 
+  dataSet$magnet_dumbbell_z, 
+  col=dataSet$classe,
+  theta=0,
+  main="3D Magnet dumbbell by Activity",
+  pch=20, cex=0.8
+))
+
+# ... way more data to explore and plot, a true project on its own.
+# chartGroupPatterns = c('magnet_belt', 'magnet_arm', 'magnet_dumbbell', 'magnet_forearm' ), group charts and so on
+```
+
+
+# Pre–Processing the Data : cleanup procedures
+A large number of predictor variables lead to complicated models, our goal is to prevent that but the same time avoid over-simplification. We will remove variables that have more than 30% NAs, investigate the use of imputation for the remaining ones. We will ignore autoincrement IDs & timestamps.
+```{r preProcessCleanup}
+# create the threshold
+thresholdNAs <- round(nrow(dataSet)*0.3)
+
+# keep only the predictor variables that have less than 30% NAs
+dataSet <- dataSet[, colSums(is.na(dataSet))< thresholdNAs]
+
+# this actually got rid of all NAs, no imputation needed
+sum(colSums(is.na(dataSet)))
+
+# remove timestamps & autoincrement IDs
+dataSet <- dataSet[,6:ncol(dataSet)]
+
+# 55 predictors left
+dim(dataSet)
+
+# only numeric and integer variables left + 2 remaining factor variables: "new_window"" and the outcome variable "classe"
+table(sapply(dataSet, class))
+
+# look at "new_window" closer
+prop.table(table(dataSet$new_window, dataSet$classe),1)
+
+# new_window looks irelevant, dropping
+dataSet$new_window<-NULL
+```
+
+
+# Train/test split
+We use caret's createDataPartition() to conduct data splits within groups of the data (stratified sampling). The final model will be used just once on the generated 30% testing set to prevent overfitting. Same goes for the final 20 testSet cases.
+```{r preProcessSplitting}
+set.seed(2015)
+inTrain <- createDataPartition(y=dataSet$classe,
+                              p=0.70, list=FALSE)
+training <- dataSet[inTrain,]
+testing <- dataSet[-inTrain,]
+```
+
+
+# Pre–Processing the Data: Standardizing - centering and scaling numeric predictors
+```{r preProcessCenterScale}
+#* centering and scaling variables except for the factor outcome
+preObj <- preProcess(training[, -ncol(training)],method=c("center","scale"))
+trainVARS <- predict(preObj, training[, -ncol(training)])
+# mean=0 
+round(sum(sapply(trainVARS, mean)),8)
+# sd = 1
+table(sapply(trainVARS, sd))
+```
+
+
+# Pre–Processing the Data: Covariates Creation using PCA
+We're looking into "binding" correlated predictors together using Principal Component Analysis in order to simplify the dataset even further without losing relevance. Covariates creation is actually refered to as Feature engineering.
+```{r preProcessCovariatePCA}
+# build correlation matrix
+M = cor(training[, -ncol(training)])
+diag(M) = 0
+# add the actual correlation to the result set
+cbind(which(M>0.8, arr.ind=T), round(M[which(M>0.8, arr.ind=T)],2))
+
+# highly correlated variables are magnet_arm_x and accel_arm_x (> 80% correlation)
+plot(
+      training$magnet_arm_x, 
+      training$accel_arm_x, 
+      col=training$classe, 
+      pch=20, 
+      cex=0.8, 
+      main="Correlated Magnet and Accel predictor values (cor>0.8)"
+)
+preProc <- preProcess( 
+            training[, -ncol(training)] , 
+            method="pca", 
+            pcaComp=16
+)
+# so we could use the parameters of the preferred PC to "aggregate" variables without losing relevancy
+round(preProc$rotation[,1],4)
+```
+
+
+# Model building
+In terms of model selection for this multiclass classification problem, there are several choices: CART, randomForest, glm, GBM. We train two [multinomial gradient boosting machine](http://www.ncbi.nlm.nih.gov/pmc/articles/PMC3885826/) (GBM) models. GMB creates many weak learners with little predictive power, stacking the learners on top of each other get a very powerful model as we will see. The first model is using gbm default settings and 5-fold CV, the second one uses an alternate tuning grid for parameters. [Model Training and Parameter Tuning for caret and gbm](http://topepo.github.io/caret/training.html). We also use caret's model independent syntax to create a randomForest model as benchmark.
+```{r ModelBuildingGBM}
+
+# using 5-fold Cross-Validation
+fitControl <- trainControl(method="cv",
+                           number=5,
+                           verboseIter=FALSE)
+set.seed(2015)
+gbmFit <- train(classe ~ ., data=training,
+                method="gbm",
+                trControl=fitControl,
+                verbose=FALSE)
+# plot the profile, examine the relationship between the estimates of performance and the tuning parameters. 
+plot(gbmFit)
+gbmFit
+
+#Alternate Tuning Grids, varying largely the amount of trees
+gbmGrid <-  expand.grid(interaction.depth = c(1, 5, 9),
+                        n.trees = (1:10)*50,
+                        shrinkage = 0.1,
+                        n.minobsinnode = 20)
+set.seed(2015)
+gbmFit2 <- train(classe ~ ., data = training,
+                 method = "gbm",
+                 trControl = fitControl,
+                 verbose = FALSE,
+                 ## Now specify the exact models 
+                 ## to evaluate:
+                 tuneGrid = gbmGrid)
+plot(gbmFit2)
+
+# as the trees number increases, so does the Accuracy and the Kappa GBM indicator.
+gbmFit2
+
+rfFit<-train(classe ~ ., data=training,
+                method="rf",
+                trControl=fitControl,
+                prox=TRUE,
+                allowParallel=TRUE
+)
+rfFit
+```
+
+
+# Model evaluation
+We build the Confusion Matrix for all the 3 models build previously. Pay special attention to the Accuracy rate and the 95% Confidence Interval. All models use 5-fold Cross Validation. 
+```{r ModelEvaluation}
+# GBM with default settings (150 trees)
+confusionMatrix(
+    predict(gbmFit, newdata=testing),
+    testing$classe
+)
+# GBM with alternate tuning grid, trees count between 50 and 500
+ confusionMatrix(
+    predict(gbmFit2, newdata=testing),
+    testing$classe
+)
+# an incredible performance, misclassified one single result out of almost 6.000!
+# too bad CPU time is around 2 hours on a quadcore I5/16GB RAM
+
+# randomForest 
+confusionMatrix(
+    predict(rfFit, newdata=testing),
+    testing$classe
+)
+# collect resamples
+results = resamples(list(GBM=gbmFit, GBM_GRID=gbmFit2, RandomForest=rfFit))
+
+# summarize the distributions
+summary(results)
+# boxplots of results
+bwplot(results)
+```
+
+# Model applied
+We will choose the GBM model with the alternate tuning grid since with 99.98% it has the highest accuracy on the testing set, even higher than the one of RandomForest (99.80%) as shown in the bwplot. The accuracy is so high that we almost shout overfiting!, but the Confusion Matrix was generated only once on the testing set, the machine learning algo was therefore not overfit for it and 30% of the data or almost 6.000 observations represent a solid testing set size. The 95% Confidence Interval of the classifier is also very high, low p-values. We therefore expect the lowest true Out of Sample error on the 20 test-cases with both GBM with alternate grid and randomForest.
+```{r ModelApplied}
+answers = predict(gbmFit2, newdata=testSet)
+```
+
+# Submission
+```{r Submission}
+dir.create("output_files/", showWarnings = FALSE)
+
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("output_files/problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+pml_write_files(answers)
+# now clicking 20 times the Submit button... surprise!
+```
