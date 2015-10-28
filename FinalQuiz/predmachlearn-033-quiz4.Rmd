@@ -1,0 +1,235 @@
+---
+title: "Practical Machine Learning - Quiz 4"
+author: "Calin Uioreanu"
+date: "October 28, 2015"
+output: 
+  html_document: 
+    keep_md: yes
+---
+
+This is the 4th and final Quiz from the [Practical Machine Learning Coursera Course](https://class.coursera.org/predmachlearn-033/) by Jeff Leek, PhD, Roger D. Peng, PhD, Brian Caffo, PhD, part of the Data Science Specialization.
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE)
+```
+```{r init, echo = FALSE}
+rm(list = ls())
+gc()
+suppressWarnings(library(caret))
+suppressWarnings(library(gbm))
+```
+
+#Question 1
+Load the vowel.train and vowel.test data sets:
+```{r Question1}
+library(ElemStatLearn)
+data(vowel.train)
+data(vowel.test) 
+dim(vowel.train); dim(vowel.test)
+```
+Set the variable y to be a factor variable in both the training and test set. Then set the seed to 33833. Fit (1) a random forest predictor relating the factor variable y to the remaining variables and (2) a boosted predictor using the "gbm" method. Fit these both with the train() command in the caret package. 
+
+```{r Preparation1}
+vowel.train$y <- as.factor(vowel.train$y)
+vowel.test$y <- as.factor(vowel.test$y)
+set.seed(33833)
+# fit a random forest predictor using caret's unified model building interface
+vowel.fit.rf <- train(y ~ .,
+                      data = vowel.train,
+                      method="rf")
+set.seed(33833)
+# fit a gradient boosting machine model, using verbose to limit the output
+vowel.fit.gbm <- train(y ~ .,
+                      data = vowel.train,
+                      method="gbm", 
+                      verbose = F)
+```
+
+## Question: What are the accuracies for the two approaches on the test data set? 
+
+We'll look at the Out of Sample error for both random forest and grandient boosting machine models.
+
+```{r Answer1.1}
+# Random Forest: 100% accuracy on the training set
+confusionMatrix(predict(vowel.fit.rf), vowel.train$y)
+# but only 60.61% accuracy on the testing set
+confusionMatrix(predict(vowel.fit.rf, vowel.test), vowel.test$y)
+
+# GBM now: 100% accuracy on training
+confusionMatrix(predict(vowel.fit.gbm), vowel.train$y)
+# Accuracy: 0.526
+confusionMatrix(predict(vowel.fit.gbm, vowel.test), vowel.test$y)
+```
+therefore both are **largely overfitted model**.
+
+## What is the accuracy among the test set samples where the two methods agree?
+```{r Answer1.2}
+confusionMatrix(
+      predict(vowel.fit.rf, vowel.test), 
+      predict(vowel.fit.gbm, vowel.test)
+)
+```
+so the accuracy on the test set where both models converge is 66.88%. 
+
+
+
+#Question 2
+
+Load the Alzheimer's data using the following commands
+```{r Preparation2}
+set.seed(3433)
+library(AppliedPredictiveModeling)
+data(AlzheimerDisease)
+adData = data.frame(diagnosis,predictors)
+inTrain = createDataPartition(adData$diagnosis, p = 3/4)[[1]]
+training = adData[ inTrain,]
+testing = adData[-inTrain,]
+```
+Set the seed to 62433 and predict diagnosis with all the other variables using a random forest ("rf"), boosted trees ("gbm") and linear discriminant analysis ("lda") model. Stack the predictions together using random forests ("rf"). What is the resulting accuracy on the test set? Is it better or worse than each of the individual predictions?
+```{r Answer2.1}
+# rough data estimates
+dim(training); dim(testing);
+set.seed(62433)
+# fit a Random Forest model
+alz.fit.rf = train(diagnosis ~ .,
+                   data = training,
+                   method = "rf")
+set.seed(62433)
+# fit a Gradient Boosting Machine model
+alz.fit.gbm = train(diagnosis ~ .,
+                   data = training,
+                   method = "gbm", verbose = FALSE)
+set.seed(62433)
+# fit a Linear Discriminant Analysis model
+alz.fit.lda = train(diagnosis ~ .,
+                   data = training,
+                   method = "lda")
+# now we evaluate the accuracy for all 3 models individualy
+
+# Random Forest
+postResample(predict(alz.fit.rf, testing), testing$diagnosis)
+# Gradient Boosting Machine
+postResample(predict(alz.fit.gbm, testing), testing$diagnosis)
+# Linear Discriminant Analysis
+postResample(predict(alz.fit.lda, testing), testing$diagnosis)
+```
+
+# Stacking the 3 models using Random Forest
+we fit a model that combines predictors
+```{r Answer2.2}
+# build a data frame with the combined predictions and the outcome variable
+predDF = data.frame(
+                  predict(alz.fit.rf, testing),
+                  predict(alz.fit.gbm, testing),
+                  predict(alz.fit.lda, testing),
+                  diagnosis = testing$diagnosis)
+dim(predDF); head(predDF)
+# training a stacking model using random forest
+combModFit <- train(diagnosis ~ ., method = "rf", data=predDF)
+# predicting on the combined data frame
+combPred <- predict(combModFit, predDF)
+# resolve overall agreement rate and Kappa
+postResample(combPred, testing$diagnosis)
+```
+So despite the individual accuracy of Random Forest of 78%, Gradient Boosting Machine of 79% and Linear Discriminant Analysis of 77%, the accuracy of the stacked model is 80%, higher than each indidual model. Weighting could improve the accuracy of the stacked model even further.
+
+# Question 3
+Load the concrete data with the commands:
+```{r Preparation3}
+set.seed(3523)
+library(AppliedPredictiveModeling)
+data(concrete)
+inTrain = createDataPartition(concrete$CompressiveStrength, p = 3/4)[[1]]
+training = concrete[ inTrain,]
+testing = concrete[-inTrain,]
+```
+Set the seed to 233 and fit a lasso model to predict Compressive Strength. Which variable is the last coefficient to be set to zero as the penalty increases? (Hint: it may be useful to look up ?plot.enet).
+
+We investigate Regularization Regression (lasso, ridge) for the dataset "concrete".
+```{r Answer3}
+set.seed(233)
+conc.fit.lasso = train(CompressiveStrength ~ .,
+                       data = training,
+                       method = "lasso")
+plot.enet(conc.fit.lasso$finalModel,
+          xvar="penalty", use.color=TRUE)
+# the chart doesn't say much, however this table reveals the last "zeroed" coefficient
+conc.fit.lasso$finalModel$beta.pure
+
+```
+
+
+#Question 4
+
+Load the data on the number of visitors to the instructors blog from [here](https://d396qusza40orc.cloudfront.net/predmachlearn/gaData.csv) 
+
+Using the commands:
+
+```{r Preparation4}
+library(lubridate)  # For year() function below
+#dat = read.csv("~/Desktop/gaData.csv")
+dat = read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/gaData.csv")
+training = dat[year(dat$date) < 2012,]
+testing = dat[(year(dat$date)) > 2011,]
+tstrain = ts(training$visitsTumblr)
+```
+Fit a model using the bats() function in the forecast package to the training time series. Then forecast this model for the remaining time points. For how many of the testing points is the true value within the 95% prediction interval bounds?
+
+We will first build a BATS model (Exponential smoothing state space model with Box-Cox transformation, ARMA errors, Trend and Seasonal components)
+```{r Answer4}
+library(forecast)
+# build a bats model based on the original time series
+visits.exp.smoothing = bats(tstrain)
+# build the forecast with the same range as the testing set (2012)
+visits.forecast = forecast(visits.exp.smoothing, nrow(testing))
+# plot the forecast
+plot(visits.forecast)
+
+# extracting the 95% prediction boundaries
+visits.forecast.lower95 = visits.forecast$lower[,2]
+visits.forecast.upper95 = visits.forecast$upper[,2]
+
+# see how many of the testing visit counts do actually match
+table ( 
+  (testing$visitsTumblr>visits.forecast.lower95) & 
+  (testing$visitsTumblr<visits.forecast.upper95))
+# and in percentages
+226/nrow(testing)
+```
+
+
+# Question 5
+
+Load the concrete data with the commands:
+```{r Preparation5}
+set.seed(3523)
+library(AppliedPredictiveModeling)
+data(concrete)
+inTrain = createDataPartition(concrete$CompressiveStrength, p = 3/4)[[1]]
+training = concrete[ inTrain,]
+testing = concrete[-inTrain,]
+```
+Set the seed to 325 and fit a support vector machine using the e1071 package to predict Compressive Strength using the default settings. Predict on the testing set. What is the RMSE?
+
+```{r Answer5}
+#install.packages("e1071")
+library("e1071")
+set.seed(325)
+conc.fit.svm = svm(CompressiveStrength ~ .,
+                     data=training)
+# comparing predictions to actual values
+conc.pred.svm = predict(conc.fit.svm, newdata = testing)
+
+# Root Mean Squared Error
+error = conc.pred.svm - testing$CompressiveStrength
+sqrt(mean(error^2))
+
+# plot the relationship between the forecasted svm values and the actual values, coloured by Age
+plot(conc.pred.svm, testing$CompressiveStrength, 
+              pch=20, cex=1, 
+              col=testing$Age,
+              main="Relationship between the svm forecast and actual values")
+```
+
+
+# EOF
